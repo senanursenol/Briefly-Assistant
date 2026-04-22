@@ -1,4 +1,4 @@
-# 🧠 DocSage: Akıllı Doküman Asistanı
+# 🧠 Briefly: Akıllı Doküman Asistanı
 
 DocSage, yüklediğiniz PDF ve Word dokümanları ile doğal dilde sohbet etmenizi sağlayan, **RAG (Retrieval-Augmented Generation)** tabanlı yerel bir yapay zeka asistanıdır.
 
