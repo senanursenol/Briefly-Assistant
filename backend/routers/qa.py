@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List
 from routers.documents import DOCUMENT_STORE
 from services.qa_service import generate_answer_from_contexts, retrieve_globally_relevant_chunks
+from services.qa_service import summarize_documents
 
 router = APIRouter(prefix="/qa", tags=["qa"])
 
@@ -13,6 +14,23 @@ class QuestionRequest(BaseModel):
 class QAResponse(BaseModel):
     answer: str
     context_chunks: List[str]
+
+class SummarizeRequest(BaseModel):
+    doc_ids: List[str]
+
+@router.post("/summarize")
+async def summarize_docs(request: SummarizeRequest):
+    """
+    Yüklenen dokümanların ID'lerini alıp genel bir özet döndürür.
+    """
+    if not request.doc_ids:
+        raise HTTPException(status_code=400, detail="Özetlenecek doküman ID'si bulunamadı.")
+        
+    try:
+        summary = summarize_documents(request.doc_ids)
+        return {"summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/", response_model=QAResponse)
 def qa_endpoint(request: QuestionRequest):

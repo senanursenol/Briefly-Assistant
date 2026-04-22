@@ -5,17 +5,18 @@ from PIL import Image
 
 # --- CONFIGURATION & CONSTANTS ---
 BASE_URL = "http://localhost:8000"
-ALLOWED_DOC_TYPES = ["pdf", "docx"]
+# TXT desteği eklendi
+ALLOWED_DOC_TYPES = ["pdf", "docx", "txt"]
 ALLOWED_IMAGE_TYPES = ["jpg", "jpeg", "png"]
 
 st.set_page_config(
-    page_title="DocSage - Smart Document Assistant",
+    page_title="Briefly - Smart Document Assistant", # İsim güncellendi
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CSS STYLING (Fixed Sidebar Button Color & Position) ---
+# --- CSS STYLING (SENİN TASARIMIN - HİÇ DOKUNULMADI) ---
 st.markdown("""
 <style>
     /* GENERAL BACKGROUND */
@@ -116,23 +117,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- SESSION STATE MANAGEMENT ---
-if "doc_id" not in st.session_state:
-    st.session_state.doc_id = None
+# YENİ: Artık tek bir doc_id değil, liste (doc_ids) tutuyoruz
+if "doc_ids" not in st.session_state:
+    st.session_state.doc_ids = []
 if "messages" not in st.session_state:
     st.session_state.messages = [] 
 if "history" not in st.session_state:
     st.session_state.history = []
 
-def reset_doc_id():
-    st.session_state.doc_id = None
+def reset_doc_ids():
+    st.session_state.doc_ids = []
     st.session_state.messages = [] 
 
 # --- SIDEBAR (History & Actions) ---
 with st.sidebar:
-    # 1. Başlık
     st.markdown('<div class="history-header">🗂️ History</div>', unsafe_allow_html=True)
     
-    # 2. Geçmiş Sorular
     if len(st.session_state.history) > 0:
         st.markdown("<h3 style='color: #bdc3c7; font-size: 1rem; margin-top: 10px;'>Recent Questions</h3>", unsafe_allow_html=True)
         for i, item in enumerate(reversed(st.session_state.history[-5:])): 
@@ -141,8 +141,6 @@ with st.sidebar:
     else:
         st.info("No questions asked yet.")
 
-    # 3. BUTONU EN ALTA İTMEK İÇİN BÜYÜK BOŞLUK
-    # Ekran boyutuna göre otomatik boşluk oluşturur
     st.markdown("""
         <style>
             div[data-testid="stSidebar"] > div:first-child {
@@ -151,15 +149,13 @@ with st.sidebar:
                 flex-direction: column;
             }
             div[data-testid="stSidebar"] > div:first-child > div:nth-child(2) {
-                flex-grow: 1; /* Bu kısım aradaki boşluğu doldurur */
+                flex-grow: 1; 
             }
         </style>
     """, unsafe_allow_html=True)
     
-    # Bu boş div yukarıdaki flex-grow sayesinde tüm boşluğu kaplayacak
     st.markdown("<div></div>", unsafe_allow_html=True)
     
-    # 4. Clear Butonu (En Alta Sabitlenmiş Olacak)
     if st.button("🗑️ Clear Conversation", use_container_width=True):
         st.session_state.messages = []
         st.session_state.history = []
@@ -167,38 +163,43 @@ with st.sidebar:
 
 # --- MAIN PAGE ---
 
-# ORTALANMIŞ BAŞLIK
-st.markdown("<h1 style='text-align: center;'>🧠 DocSage Assistant</h1>", unsafe_allow_html=True)
+# İsim Güncellendi
+st.markdown("<h1 style='text-align: center;'>🧠 Briefly Assistant</h1>", unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
-# WARNING
 st.info(
     "👋 **Welcome!** This system is optimized for **English content**.\n\n"
-    "Please upload **English** documents (PDF/DOCX) and ask your questions in **English** for the best accuracy."
+    "Please upload **English** documents (PDF, DOCX, TXT) and ask your questions in **English** for the best accuracy."
 )
 
 # FILE UPLOAD SECTION
 with st.container():
-    uploaded_file = st.file_uploader(
-        "📄 Upload English Document (PDF, DOCX) or Image",
+    # YENİ: accept_multiple_files=True eklendi
+    uploaded_files = st.file_uploader(
+        "📄 Upload English Documents (PDF, DOCX, TXT) or Images",
         type=ALLOWED_DOC_TYPES + ALLOWED_IMAGE_TYPES,
+        accept_multiple_files=True,
         key="file_upload",
-        on_change=reset_doc_id
+        on_change=reset_doc_ids
     )
 
-    # Process Button
-    if st.button("🚀 Process File", use_container_width=True):
-        if uploaded_file:
-            with st.spinner("⚙️ Analyzing document... Please wait."):
+    if st.button("🚀 Process Files", use_container_width=True):
+        if uploaded_files:
+            with st.spinner("⚙️ Analyzing documents... Please wait."):
                 try:
-                    uploaded_file.seek(0)
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                    response = requests.post(f"{BASE_URL}/documents/upload", files=files)
+                    # YENİ: Birden fazla dosyayı payload olarak hazırlıyoruz
+                    files_payload = []
+                    for uf in uploaded_files:
+                        uf.seek(0)
+                        files_payload.append(("files", (uf.name, uf.getvalue(), uf.type)))
+
+                    response = requests.post(f"{BASE_URL}/documents/upload", files=files_payload)
                     
                     if response.status_code == 200:
                         data = response.json()
-                        st.session_state.doc_id = data["doc_id"]
-                        st.success(f"✅ Document Ready! ID: {data['doc_id']}")
+                        # YENİ: Gelen ID'leri doc_ids listesine atıyoruz
+                        st.session_state.doc_ids = [doc["doc_id"] for doc in data["documents"]]
+                        st.success(f"✅ {len(st.session_state.doc_ids)} Document(s) Ready!")
                         time.sleep(1) 
                         st.rerun()
                     else:
@@ -206,15 +207,38 @@ with st.container():
                 except Exception as e:
                     st.error(f"❌ Connection error: {e}")
         else:
-            st.warning("⚠️ Please select a file first.")
+            st.warning("⚠️ Please select at least one file first.")
 
-# Image Preview
-if uploaded_file and uploaded_file.type.startswith("image"):
-    with st.expander("🖼️ View Uploaded Image"):
-        st.image(uploaded_file, use_column_width=True)
-
-st.markdown("---")
-
+# --- PROCESS FILES BLOĞUNUN HEMEN ALTI (DIŞINDA) ---
+        
+        # 1. Kontrol: Eğer hafızada dökümanlar varsa butonu göster
+        if "doc_ids" in st.session_state and st.session_state.doc_ids:
+            # Çizgi yerine sadece temiz bir boşluk
+            st.write("") 
+            
+            # Boyutlu, temiz ve net buton
+            if st.button("✨ Summarize All Documents", use_container_width=True):
+                with st.spinner("Briefly is generating a summary..."):
+                    try:
+                        # Backend isteği
+                        sum_response = requests.post(
+                            "http://localhost:8000/qa/summarize",
+                            json={"doc_ids": st.session_state.doc_ids}
+                        )
+                        
+                        if sum_response.status_code == 200:
+                            summary_data = sum_response.json()["summary"]
+                            # Özeti chat ekranına ekle
+                            st.session_state.messages.append({
+                                "role": "assistant", 
+                                "content": f"✨ **Summary:**\n\n{summary_data}"
+                            })
+                            st.rerun() 
+                        else:
+                            st.error(f"Error: {sum_response.text}")
+                    except Exception as e:
+                        st.error(f"Connection error: {str(e)}")
+        
 # CHAT INTERFACE
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -228,7 +252,7 @@ for message in st.session_state.messages:
 placeholder_text = "Ask your question here (e.g., 'What is the main topic?')..."
 if prompt := st.chat_input(placeholder_text):
     
-    if not st.session_state.doc_id:
+    if not st.session_state.doc_ids:
         st.warning("⚠️ Please upload a document first to start chatting.")
         st.stop()
 
@@ -246,7 +270,8 @@ if prompt := st.chat_input(placeholder_text):
         
         with st.spinner("Searching knowledge base..."):
             try:
-                payload = {"doc_ids": [st.session_state.doc_id], "question": prompt}
+                # YENİ: Artık [st.session_state.doc_id] yerine doğrudan listeyi gönderiyoruz
+                payload = {"doc_ids": st.session_state.doc_ids, "question": prompt}
                 response = requests.post(f"{BASE_URL}/qa/", json=payload)
                 
                 if response.status_code == 200:

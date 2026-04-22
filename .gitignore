@@ -46,3 +46,4 @@ data/
 # Faiss indeks dosyaları
 *.index
 *.faiss
+

@@ -1,10 +1,9 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from typing import Dict
+from typing import List, Dict
 import uuid
 
 from services.document_service import extract_text_from_file
-from services.documents import DocumentObject
-from services.documents import split_into_chunks
+from services.documents import DocumentObject, split_into_chunks
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -12,41 +11,47 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 DOCUMENT_STORE: Dict[str, DocumentObject] = {}
 
 @router.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_documents(files: List[UploadFile] = File(...)):
     """
-    Tek bir dosya yükler (PDF/DOCX), metni ayıklar ve store'a kaydeder.
+    Birden fazla dosyayı aynı anda yükler, metinleri ayıklar ve store'a kaydeder.
     """
-    filename = file.filename or "document"
+    uploaded_docs = []
     
-    # Dosya uzantısını güvenli şekilde kontrol et
-    parts = filename.split(".")
-    ext = parts[-1].lower() if len(parts) > 1 else ""
-
-    if ext not in ["pdf", "docx"]:
-        raise HTTPException(status_code=400, detail="Sadece PDF ve DOCX dosyaları destekleniyor.")
-
-    try:
-        content = await file.read()
+    for file in files:
+        filename = file.filename or "document"
         
-        # 1. Metni ayıkla
-        text = extract_text_from_file(content, ext)
+        parts = filename.split(".")
+        ext = parts[-1].lower() if len(parts) > 1 else ""
 
-        # 2. Metni parçalara böl
-        chunks = split_into_chunks(text)
-        
-        # 3. DocumentObject oluştur
-        doc_obj = DocumentObject(chunks=chunks)
+        # GÜNCELLENEN KISIM: Kapıdaki güvenliğe resimleri içeri almasını söylüyoruz
+        if ext not in ["pdf", "docx", "txt", "png", "jpg", "jpeg"]:
+            continue 
 
-        # 4. ID oluştur ve sakla
-        doc_id = str(uuid.uuid4())
-        DOCUMENT_STORE[doc_id] = doc_obj
-        
-        return {
-            "doc_id": doc_id,
-            "filename": filename,
-            "num_chars": len(chunks)
-        }
+        try:
+            content = await file.read()
+            
+            # 1. Metni ayıkla
+            text = extract_text_from_file(content, ext)
 
-    except Exception as e:
-        # Hata detayını kullanıcıya/frontend'e dön
-        raise HTTPException(status_code=500, detail=f"Dosya işlenirken hata oluştu: {str(e)}")
+            # 2. Metni parçalara böl
+            chunks = split_into_chunks(text)
+            
+            # 3. DocumentObject oluştur
+            doc_obj = DocumentObject(chunks=chunks)
+
+            # 4. ID oluştur ve sakla
+            doc_id = str(uuid.uuid4())
+            DOCUMENT_STORE[doc_id] = doc_obj
+            
+            uploaded_docs.append({
+                "doc_id": doc_id,
+                "filename": filename
+            })
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"{filename} işlenirken hata oluştu: {str(e)}")
+            
+    if not uploaded_docs:
+        raise HTTPException(status_code=400, detail="Geçerli bir dosya bulunamadı.")
+
+    return {"documents": uploaded_docs}

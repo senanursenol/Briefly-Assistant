@@ -11,4 +11,4 @@ app.include_router(qa_router)
 # Sağlık kontrolü için basit bir ana sayfa endpoint'i
 @app.get("/")
 def read_root():
-    return {"message": "DocSage API is running correctly!"}
+    return {"message": "Briefly API is running correctly!"}

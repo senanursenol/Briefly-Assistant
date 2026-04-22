@@ -1,32 +1,25 @@
-import numpy as np
-from typing import List
+import os
 import re
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import numpy as np
+from routers.documents import DOCUMENT_STORE
+from typing import List
+from groq import Groq
+from dotenv import load_dotenv
 from services.documents import DocumentObject
 
-# --- AYARLAR ---
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct" 
+# Çevresel değişkenleri yükle (.env dosyasından)
+load_dotenv()
 
-# Model cevabı bulamadığında döneceği standart mesaj
+# --- AYARLAR ---
+MODEL_NAME = "llama-3.1-8b-instant" 
 NO_ANSWER_MSG = "I am sorry, I could not find the answer to this question in the provided documents."
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    device_map="cpu",
-    torch_dtype=torch.float32,
-    trust_remote_code=True
-)
-model.eval()
+# Groq istemcisini başlat
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# --- YARDIMCI FONKSİYONLAR ---
+# --- HİBRİT ARAMA VE RETRIEVAL FONKSİYONLARI ---
 
 def calculate_hybrid_match(question: str, text: str) -> float:
-    """
-    Keyword Skorlayıcı: Stop words temizlenir, özel isimler (Proper Nouns) korunur.
-    Özel isimler metinde yoksa skor düşürülür (ceza).
-    """
     stops = {
         "what", "how", "why", "when", "does", "do", "did", "can", "could", 
         "use", "using", "used", "code", "file", "make", "create",
@@ -38,14 +31,12 @@ def calculate_hybrid_match(question: str, text: str) -> float:
     
     if not words: return 0.5 
     
-    # Kelime Ağırlıkları
     weights = {}
     question_words_original = re.findall(r"\b\w{3,}\b", question)
     word_case_map = {w.lower(): w for w in question_words_original}
 
     for w_lower in words:
         original = word_case_map.get(w_lower, w_lower)
-        # Baş harfi büyükse (Özel İsim) -> Yüksek Puan
         if original[0].isupper():
             weights[w_lower] = 3.0
         elif len(w_lower) > 6:
@@ -61,25 +52,18 @@ def calculate_hybrid_match(question: str, text: str) -> float:
         if re.search(rf"\b{re.escape(word)}\b", text_lower):
             score += weight
         elif weight >= 3.0: 
-            # Özel isim yoksa ceza kes
             penalty += 1.0
 
     return max(0.0, (score - penalty) / total_weight)
-
-# --- RETRIEVAL (ARAMA) ---
 
 def retrieve_globally_relevant_chunks(
     question: str,
     documents: List[DocumentObject],
     k_per_doc: int = 5,
-    max_chunks: int = 5,
-    threshold: float = 0.35,
-    vec_weight: float = 0.65
+    max_chunks: int = 8,
+    threshold: float = 0.15,  # 0.10'dan 0.15'e çıkardık
+    vec_weight: float = 0.60  # %60 Anlam, %40 Kelime Eşleşmesi
 ) -> List[str]:
-    """
-    Tüm dokümanlar arasında hem vektör benzerliği hem de anahtar kelime eşleşmesi
-    kullanarak en alakalı parçaları bulur (Hybrid Search).
-    """
     candidates = list({r["text"] for doc in documents for r in doc.embedding_store.search(question, k=k_per_doc)})
     if not candidates: return []
 
@@ -94,98 +78,94 @@ def retrieve_globally_relevant_chunks(
     
     for text, v_score in zip(candidates, v_scores):
         k_score = calculate_hybrid_match(question, text)
-        # Vektör ve Keyword skorlarını ağırlıklandırarak birleştir
         h_score = (v_score * vec_weight) + (k_score * (1 - vec_weight))
         
         if h_score >= threshold:
             final_results.append((h_score, text))
 
-    # En yüksek skorlu parçaları döndür
     return [res[1] for res in sorted(final_results, key=lambda x: x[0], reverse=True)[:max_chunks]]
 
-# --- GENERATION (CEVAP ÜRETME) ---
+# --- GENERATION (GROQ İLE CEVAP ÜRETME) ---
 
 def generate_answer_from_contexts(
     question: str,
     contexts: List[str]
 ) -> str:
     """
-    Bulunan bağlamları kullanarak LLM'e (Language Model) cevap ürettirir.
+    Bulunan bağlamları kullanarak Groq API üzerinden Briefly asistanına cevap ürettirir.
     """
     if not contexts:
         return NO_ANSWER_MSG
 
     context_text = "\n\n".join(contexts)
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a helpful AI assistant. Your task is to answer the user's question based strictly on the provided context.\n"
-                "Steps to follow:\n"
-                "1. Read the context carefully.\n"
-                "2. Find the specific sentences that answer the question.\n"
-                "3. Synthesize the answer in a clear, readable format.\n"
-                f"If the context does not contain the answer, reply exactly with: '{NO_ANSWER_MSG}'"
-            )
-        },
-        {
-            "role": "user",
-            "content": f"Context:\n{context_text}\n\nQuestion:\n{question}"
-        }
-    ]
-
-    text_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-
-    inputs = tokenizer(
-        text_prompt,
-        return_tensors="pt",
-        truncation=True,
-        max_length=2048
-    ).to(model.device)
-
-    terminators = [
-        tokenizer.eos_token_id,
-        tokenizer.convert_tokens_to_ids("<|im_end|>"),
-        tokenizer.convert_tokens_to_ids("<|endoftext|>")
-    ]
-
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=512,
-            do_sample=False,
+    try:
+        # Groq API Çağrısı
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Briefly, a helpful AI assistant. Your task is to answer user questions "
+                        "strictly based on the provided context. Be concise and accurate.\n"
+                        f"If the context does not contain the answer, reply exactly with: '{NO_ANSWER_MSG}'"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Context:\n{context_text}\n\nQuestion:\n{question}"
+                }
+            ],
+            model=MODEL_NAME,
             temperature=0.0,
-            repetition_penalty=1.1,
-            eos_token_id=terminators,
-            pad_token_id=tokenizer.eos_token_id
+            max_tokens=1024,
         )
-
-    generated_ids = outputs[0][inputs.input_ids.shape[1]:]
-    answer = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-
-    # --- TEMİZLİK ---
-    
-    # 1. Modelin kendi kendine konuşmasını temizle
-    for cut_phrase in ["Answer:", "Explanation:", "Human:", "User:", "Note:"]:
-        if cut_phrase in answer:
-            answer = answer.replace(cut_phrase, "").strip()
-
-    # 2. Hatalı placeholder çıktısını düzelt
-    if "{NO_ANSWER_MSG}" in answer or "NO_ANSWER_MSG" in answer:
-        return NO_ANSWER_MSG
-
-    # 3. Telif hakkı vb. uyarıları varsa cevap yoktur (Hallüsinasyon önlemi)
-    for banned in ["Packt", "Publishing", "Copyright", "All rights reserved"]:
-        if banned.lower() in answer.lower():
+        
+        answer = chat_completion.choices[0].message.content.strip()
+        
+        # Temizlik ve Kontrol
+        if len(answer) < 5 or "NO_ANSWER_MSG" in answer:
             return NO_ANSWER_MSG
             
-    # 4. Cevap çok kısaysa (anlamsızsa)
-    if len(answer) < 10:
-        return NO_ANSWER_MSG
+        return answer
 
-    return answer
+    except Exception as e:
+        return f"Briefly Connection Error (Groq): {str(e)}"
+    
+def summarize_documents(doc_ids: List[str]) -> str:
+    """
+    Verilen doküman ID'lerine ait tüm metinleri birleştirir ve Groq ile özetler.
+    """
+    all_text = ""
+    for doc_id in doc_ids:
+        if doc_id in DOCUMENT_STORE:
+            # Dokümanın tüm parçalarını (chunks) birleştir
+            all_text += " ".join(DOCUMENT_STORE[doc_id].chunks) + "\n"
+            
+    if not all_text.strip():
+        return "Özetlenecek herhangi bir metin bulunamadı."
+
+    # Groq'un token sınırını aşmamak için metni belirli bir karakterle sınırlandırıyoruz
+    max_chars = 15000 
+    text_to_summarize = all_text[:max_chars]
+
+    try:
+        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+        
+        response = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "You are an expert executive assistant. Summarize the provided text clearly and comprehensively. Use bullet points for key takeaways. Respond in the same language as the provided text."
+                },
+                {
+                    "role": "user", 
+                    "content": f"Please summarize the following document(s):\n\n{text_to_summarize}"
+                }
+            ],
+            model="llama-3.1-8b-instant",
+            temperature=0.3, # Özetleme için yaratıcılığı çok hafif açıyoruz
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        raise ValueError(f"Özetleme sırasında Groq API hatası: {str(e)}")
