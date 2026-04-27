@@ -1,0 +1,30 @@
+services:
+  backend:
+    build: ./backend
+    container_name: docsage-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL}
+      - USE_LOCAL_LLM=${USE_LOCAL_LLM}
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: docsage-frontend
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./frontend:/app
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
