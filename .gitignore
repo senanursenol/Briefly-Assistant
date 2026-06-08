@@ -1,48 +1,10 @@
-# --- Python Standartları ---
-__pycache__/
-*.py[cod]
-*$py.class
-
-# --- Sanal Ortamlar (Virtual Envs) ---
-# Bunları asla yükleme, herkes kendi bilgisayarında kurmalı
-venv/
+bin/
+obj/
 .venv/
-env/
-myenv/
-
-# --- Çevresel Değişkenler (GÜVENLİK İÇİN ÇOK ÖNEMLİ) ---
-# API Keylerin olduğu dosyayı gizle
+.vs/
+*.user
+*.suo
 .env
-
-# --- İşletim Sistemi Dosyaları ---
+appsettings.Development.local.json
+**/logs/
 .DS_Store
-Thumbs.db
-
-# --- IDE Ayarları (VS Code, PyCharm vb.) ---
-.vscode/
-.idea/
-
-# --- Yapay Zeka ve Büyük Dosyalar ---
-# Modelleri ve ağırlık dosyalarını repo'ya atma (Github 100MB sınırı var)
-*.bin
-*.pth
-*.pt
-*.onnx
-*.safetensors
-
-# HuggingFace Cache (Eğer proje içine iniyorsa)
-.cache/
-models/
-
-# --- Veri ve Dokümanlar ---
-# Test için kullandığın PDF ve Word dosyaları gitmesin
-*.pdf
-*.docx
-*.doc
-uploads/
-data/
-
-# --- Vektör Veritabanı Dosyaları ---
-# Faiss indeks dosyaları
-*.index
-*.faiss

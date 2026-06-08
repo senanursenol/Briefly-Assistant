@@ -1,0 +1,350 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@inject DocSage.Web.Services.DocSageApiClient Api
+@inject ILogger<Home> Logger
+
+<PageTitle>DocSage - Smart Document Assistant</PageTitle>
+
+<div class="docsage-layout">
+    <aside class="docsage-sidebar">
+        <h2 class="history-header">🗂️ History</h2>
+
+        @if (_history.Count > 0)
+        {
+            <h3 class="history-sub">Recent Questions</h3>
+            @foreach (var item in _history.TakeLast(5).Reverse())
+            {
+                <p class="history-item">❓ <strong>@item.Question</strong></p>
+                <hr class="history-divider" />
+            }
+        }
+        else
+        {
+            <p class="sidebar-info">No questions asked yet.</p>
+        }
+
+        @if (_loadedDocs.Count > 0)
+        {
+            <h3 class="history-sub loaded-docs-title">📂 Yüklü Dokümanlar</h3>
+            @foreach (var doc in _loadedDocs)
+            {
+                <div class="loaded-doc-row">
+                    <span class="loaded-doc-name">📄 @doc.Name</span>
+                    <button type="button" class="btn-summarize" title="Özet Çıkar" @onclick="() => SummarizeDoc(doc)">📝</button>
+                </div>
+            }
+        }
+
+        <div class="sidebar-spacer"></div>
+        <button type="button" class="btn-clear" @onclick="ClearAll">🗑️ Sohbeti ve Dosyaları Temizle</button>
+    </aside>
+
+    <main class="docsage-main">
+        <h1 class="main-title">🧠 DocSage Asistanı</h1>
+
+        @if (!string.IsNullOrEmpty(_summaryDocName))
+        {
+            <div class="summary-panel">
+                <p>📄 @_summaryDocName özetleniyor...</p>
+                @if (!string.IsNullOrEmpty(_summaryText))
+                {
+                    <h3>✨ Döküman Özeti</h3>
+                    <div class="summary-content">@_summaryText</div>
+                }
+                @if (!string.IsNullOrEmpty(_summaryError))
+                {
+                    <p class="error-text">@_summaryError</p>
+                }
+                <button type="button" class="btn-primary" @onclick="CloseSummary">Kapat</button>
+            </div>
+            <hr />
+        }
+
+        <div class="welcome-banner">
+            👋 <strong>Hoş Geldiniz!</strong> Bu sistem artık <strong>Türkçe ve İngilizce</strong> içerikler için optimize edilmiştir.
+            Lütfen dökümanlarınızı (PDF, DOC, DOCX, TXT) yükleyin ve sorularınızı istediğiniz dilde sorun.
+        </div>
+
+        <div class="upload-section">
+            <InputFile OnChange="OnFilesSelected" multiple class="file-input" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png" />
+            <button type="button" class="btn-primary btn-process" disabled="@(_isProcessing || _pendingFiles.Count == 0)" @onclick="ProcessFiles">
+                🚀 Dosyaları İşle
+            </button>
+            @if (!string.IsNullOrEmpty(_uploadMessage))
+            {
+                <p class="@_uploadMessageClass">@_uploadMessage</p>
+            }
+        </div>
+
+        @foreach (var preview in _imagePreviews)
+        {
+            <details class="image-preview">
+                <summary>🖼️ Görsel: @preview.Name</summary>
+                <img src="@preview.DataUrl" alt="@preview.Name" />
+            </details>
+        }
+
+        <hr />
+
+        <div class="chat-section">
+            @foreach (var message in _messages)
+            {
+                <div class="chat-message @message.Role">
+                    <strong>@(message.Role == "user" ? "Siz" : "Asistan")</strong>
+                    <p>@message.Content</p>
+                    @if (message.Sources.Count > 0)
+                    {
+                        <details>
+                            <summary>📚 Referans Kaynaklar (Kanıtlar)</summary>
+                            @foreach (var source in message.Sources)
+                            {
+                                <p class="source-item">📄 <strong>Kaynak: @source.Source</strong><br />...@(source.Text.Length > 150 ? source.Text[..150] : source.Text)...</p>
+                            }
+                        </details>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="chat-input-row">
+            <input type="text" class="chat-input" placeholder="Sorunuzu buraya yazın (Örn: 'Dökümanların ana konusu nedir?')..."
+                   @bind="_questionInput" @bind:event="oninput" @onkeydown="OnQuestionKeyDown" disabled="@_isAsking" />
+            <button type="button" class="btn-primary" disabled="@(_isAsking || string.IsNullOrWhiteSpace(_questionInput))" @onclick="SendQuestion">Gönder</button>
+        </div>
+        @if (!string.IsNullOrEmpty(_chatWarning))
+        {
+            <p class="warning-text">@_chatWarning</p>
+        }
+    </main>
+</div>
+
+@code {
+    private readonly List<LoadedDocumentInfo> _loadedDocs = [];
+    private readonly List<ChatMessageState> _messages = [];
+    private readonly List<ChatHistoryItem> _history = [];
+    private readonly List<IBrowserFile> _pendingFiles = [];
+    private readonly List<ImagePreviewState> _imagePreviews = [];
+
+    private string _questionInput = "";
+    private string? _uploadMessage;
+    private string _uploadMessageClass = "info-text";
+    private string? _chatWarning;
+    private bool _isProcessing;
+    private bool _isAsking;
+
+    private string? _summaryDocId;
+    private string? _summaryDocName;
+    private string? _summaryText;
+    private string? _summaryError;
+
+    private static readonly string[] AllowedDocTypes = ["pdf", "doc", "docx", "txt"];
+    private static readonly string[] AllowedImageTypes = ["jpg", "jpeg", "png"];
+    private static readonly string[] NegativeKeywords =
+        ["üzgünüm", "bulamadım", "bilgi bulunamadı", "i am sorry", "could not find"];
+
+    private void OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        _pendingFiles.Clear();
+        _imagePreviews.Clear();
+        _uploadMessage = null;
+
+        foreach (var file in e.GetMultipleFiles(20))
+        {
+            var ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
+            if (AllowedDocTypes.Contains(ext) || AllowedImageTypes.Contains(ext))
+            {
+                _pendingFiles.Add(file);
+                if (AllowedImageTypes.Contains(ext))
+                {
+                    _ = LoadImagePreviewAsync(file);
+                }
+            }
+        }
+    }
+
+    private async Task LoadImagePreviewAsync(IBrowserFile file)
+    {
+        await using var stream = file.OpenReadStream(5 * 1024 * 1024);
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms);
+        var base64 = Convert.ToBase64String(ms.ToArray());
+        var mime = file.ContentType;
+        _imagePreviews.Add(new ImagePreviewState
+        {
+            Name = file.Name,
+            DataUrl = $"data:{mime};base64,{base64}"
+        });
+        StateHasChanged();
+    }
+
+    private async Task ProcessFiles()
+    {
+        if (_pendingFiles.Count == 0)
+        {
+            _uploadMessage = "⚠️ Lütfen önce en az bir dosya seçin.";
+            _uploadMessageClass = "warning-text";
+            return;
+        }
+
+        _isProcessing = true;
+        _uploadMessage = "⚙️ Dökümanlar analiz ediliyor... Lütfen bekleyin.";
+        _uploadMessageClass = "info-text";
+        var newDocs = 0;
+
+        try
+        {
+            foreach (var file in _pendingFiles)
+            {
+                var ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
+                if (!AllowedDocTypes.Contains(ext))
+                {
+                    continue;
+                }
+
+                if (_loadedDocs.Any(d => d.Name == file.Name))
+                {
+                    continue;
+                }
+
+                await using var stream = file.OpenReadStream(50 * 1024 * 1024);
+                var result = await Api.UploadDocumentAsync(stream, file.Name, file.ContentType);
+                if (result is not null)
+                {
+                    _loadedDocs.Add(new LoadedDocumentInfo { Id = result.DocId, Name = file.Name });
+                    newDocs++;
+                }
+            }
+
+            if (newDocs > 0)
+            {
+                _uploadMessage = $"✅ {newDocs} yeni döküman başarıyla hazırlandı!";
+                _uploadMessageClass = "success-text";
+            }
+            else if (_loadedDocs.Count == 0)
+            {
+                _uploadMessage = "⚠️ Hiçbir dosya işlenemedi.";
+                _uploadMessageClass = "warning-text";
+            }
+        }
+        catch (Exception ex)
+        {
+            _uploadMessage = $"❌ Yükleme hatası: {ex.Message}";
+            _uploadMessageClass = "error-text";
+            Logger.LogError(ex, "Dosya yükleme hatası");
+        }
+        finally
+        {
+            _isProcessing = false;
+            _pendingFiles.Clear();
+        }
+    }
+
+    private async Task SendQuestion()
+    {
+        _chatWarning = null;
+        if (_loadedDocs.Count == 0)
+        {
+            _chatWarning = "⚠️ Sohbet başlatmak için lütfen önce en az bir döküman yükleyin.";
+            return;
+        }
+
+        var prompt = _questionInput.Trim();
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            return;
+        }
+
+        _questionInput = "";
+        _messages.Add(new ChatMessageState { Role = "user", Content = prompt });
+        _isAsking = true;
+
+        try
+        {
+            var request = new QuestionRequest
+            {
+                DocIds = _loadedDocs.Select(d => d.Id).ToList(),
+                Question = prompt
+            };
+
+            var result = await Api.AskAsync(request);
+            var answer = result?.Answer ?? "Cevap üretilemedi.";
+            var sources = result?.ContextChunks ?? [];
+            var isNegative = NegativeKeywords.Any(k => answer.Contains(k, StringComparison.OrdinalIgnoreCase));
+
+            _messages.Add(new ChatMessageState
+            {
+                Role = "assistant",
+                Content = answer,
+                Sources = isNegative ? [] : sources
+            });
+
+            _history.Add(new ChatHistoryItem { Question = prompt, Answer = answer });
+        }
+        catch (Exception ex)
+        {
+            _messages.Add(new ChatMessageState { Role = "assistant", Content = $"Bağlantı hatası: {ex.Message}" });
+        }
+        finally
+        {
+            _isAsking = false;
+        }
+    }
+
+    private async Task OnQuestionKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SendQuestion();
+        }
+    }
+
+    private async Task SummarizeDoc(LoadedDocumentInfo doc)
+    {
+        _summaryDocId = doc.Id;
+        _summaryDocName = doc.Name;
+        _summaryText = null;
+        _summaryError = null;
+        try
+        {
+            var result = await Api.SummarizeAsync(doc.Id);
+            _summaryText = result?.Summary ?? "";
+        }
+        catch (Exception ex)
+        {
+            _summaryError = $"Özet hatası: {ex.Message}";
+        }
+    }
+
+    private void CloseSummary()
+    {
+        _summaryDocId = null;
+        _summaryDocName = null;
+        _summaryText = null;
+        _summaryError = null;
+    }
+
+    private void ClearAll()
+    {
+        _messages.Clear();
+        _history.Clear();
+        _loadedDocs.Clear();
+        _pendingFiles.Clear();
+        _imagePreviews.Clear();
+        _uploadMessage = null;
+        _chatWarning = null;
+        CloseSummary();
+    }
+
+    private sealed class ChatMessageState
+    {
+        public required string Role { get; init; }
+        public required string Content { get; init; }
+        public List<ContextChunkDto> Sources { get; init; } = [];
+    }
+
+    private sealed class ImagePreviewState
+    {
+        public required string Name { get; init; }
+        public required string DataUrl { get; init; }
+    }
+}

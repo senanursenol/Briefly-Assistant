@@ -1,30 +1,35 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: src/DocSage.Api/Dockerfile
     container_name: docsage-backend
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
-      - hf_cache:/root/.cache/huggingface
+      - model_cache:/root/.cache/docsage/models
+      - llm_cache:/root/.cache/docsage/models/llm
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_MODEL=${GROQ_MODEL}
-      - USE_LOCAL_LLM=${USE_LOCAL_LLM}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - USE_LOCAL_LLM=${USE_LOCAL_LLM:-false}
+      - LOCAL_MODEL_PATH=${LOCAL_MODEL_PATH:-}
+      - MODEL_CACHE_DIR=/root/.cache/docsage/models
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: src/DocSage.Web/Dockerfile
     container_name: docsage-frontend
     ports:
-      - "8501:8501"
-    volumes:
-      - ./frontend:/app
+      - "8501:8080"
     environment:
-      - BACKEND_URL=http://backend:8000
+      - Backend__Url=http://backend:8000
     depends_on:
       - backend
     restart: unless-stopped
 
 volumes:
-  hf_cache:
+  model_cache:
+  llm_cache:
